@@ -237,18 +237,19 @@ class MiniBarChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final maxValue = values.reduce((a, b) => a > b ? a : b);
+    final chartValues = values.isEmpty ? const [1.0] : values;
+    final maxValue = chartValues.reduce((a, b) => a > b ? a : b);
     return SizedBox(
       height: compact ? 92 : 118,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
-        children: List.generate(values.length, (index) {
+        children: List.generate(chartValues.length, (index) {
           final isPeak = index == 5 || index == 14 || index == 15;
           return Expanded(
             child: Align(
               alignment: Alignment.bottomCenter,
               child: FractionallySizedBox(
-                heightFactor: (values[index] / maxValue).clamp(0.12, 1.0),
+                heightFactor: (chartValues[index] / maxValue).clamp(0.12, 1.0),
                 child: Container(
                   margin: const EdgeInsets.symmetric(horizontal: 3),
                   decoration: BoxDecoration(

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:emotion_app/core/theme/app_colors.dart';
 import 'package:emotion_app/data/api/api_helpers.dart';
 import 'package:emotion_app/data/api/backend_api.dart';
+import 'package:emotion_app/data/device/device_usage_service.dart';
 import 'package:emotion_app/shared/widgets/app_widgets.dart';
 
 class HomePage extends StatefulWidget {
@@ -14,12 +15,14 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final api = BackendApi();
+  final deviceUsage = DeviceUsageService();
   bool loading = true;
+  bool hasUsagePermission = false;
   String? error;
   int totalMinutes = 0;
   List<Map<String, dynamic>> usageLogs = [];
   Map<String, dynamic>? cesdResult;
-  String notice = 'Take a short break and come back to yourself.';
+  String notice = '잠깐 쉬어가며 내 마음을 확인해보세요.';
   String? noticeAuthor;
   bool showCesdCard = true;
   bool showChatbotCard = true;
@@ -36,16 +39,51 @@ class _HomePageState extends State<HomePage> {
       error = null;
     });
     try {
-      final usage = await api.getUsageSummary();
-      final usageData = asMap(usage['data']);
+      var serverLogs = <Map<String, dynamic>>[];
+      var serverTotal = 0;
+
+      final usage = await _ignore(api.getUsageSummary());
+      final usageData = asMap(usage?['data']);
+      serverTotal = asInt(usageData?['total_usage_minutes']);
+      serverLogs = asMapList(usageData?['usage_logs']);
+
+      hasUsagePermission = await deviceUsage.hasPermission();
+      if (hasUsagePermission) {
+        final range = DeviceUsageService.todayKstRange();
+        final apps = await deviceUsage.getUsageRange(range.start, range.end);
+        final daily = await deviceUsage.getDailyUsageRange(
+          range.start,
+          range.end,
+        );
+        final todayKey = DeviceUsageService.dateKey(
+          DeviceUsageService.nowKst(),
+        );
+        final todayTotal = daily
+            .where((item) => item.date == todayKey)
+            .fold<int>(0, (sum, item) => sum + item.durationMinutes);
+        if (apps.isNotEmpty || todayTotal > 0) {
+          serverLogs = apps
+              .map(
+                (item) => {
+                  'app_name': item.appName,
+                  'duration_minutes': item.durationMinutes,
+                },
+              )
+              .toList();
+          serverTotal = todayTotal > 0
+              ? todayTotal
+              : apps.fold<int>(0, (sum, item) => sum + item.durationMinutes);
+        }
+      }
+
       final result = await _ignore(api.getCesdResult());
       final noticeResult = await _ignore(api.getRandomNotice());
       final status = await _ignore(api.getCardStatus());
 
       if (!mounted) return;
       setState(() {
-        totalMinutes = asInt(usageData?['total_usage_minutes']);
-        usageLogs = asMapList(usageData?['usage_logs']);
+        totalMinutes = serverTotal;
+        usageLogs = serverLogs;
         cesdResult = asMap(result?['data']);
         final noticeData = asMap(noticeResult?['data']);
         notice = noticeData?['message']?.toString() ?? notice;
@@ -103,7 +141,7 @@ class _HomePageState extends State<HomePage> {
                         children: [
                           const Expanded(
                             child: Text(
-                              'Today summary',
+                              '오늘 요약',
                               style: TextStyle(
                                 color: AppColors.navy,
                                 fontSize: 14,
@@ -122,7 +160,12 @@ class _HomePageState extends State<HomePage> {
                     ),
                     if (error != null)
                       _ErrorBanner(message: error!, onRetry: _load),
-                    _TodaySummaryCard(totalMinutes: totalMinutes),
+                    if (!hasUsagePermission)
+                      _PermissionHint(onOpenSettings: deviceUsage.openSettings),
+                    _TodaySummaryCard(
+                      totalMinutes: totalMinutes,
+                      fromDevice: hasUsagePermission,
+                    ),
                     _AppUsageCard(logs: usageLogs),
                     if (showCesdCard) _DiagnosisCard(result: cesdResult),
                     if (showChatbotCard)
@@ -133,6 +176,30 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PermissionHint extends StatelessWidget {
+  const _PermissionHint({required this.onOpenSettings});
+
+  final VoidCallback onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    return DesignCard(
+      color: const Color(0xfffffbec),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              '홈에서 실제 사용시간을 보려면 사용정보 접근 권한이 필요해요.',
+              style: TextStyle(color: AppColors.mutedText, fontSize: 12),
+            ),
+          ),
+          TextButton(onPressed: onOpenSettings, child: const Text('설정 열기')),
         ],
       ),
     );
@@ -159,7 +226,7 @@ class _ErrorBanner extends StatelessWidget {
               style: const TextStyle(fontSize: 12, color: Colors.redAccent),
             ),
           ),
-          TextButton(onPressed: onRetry, child: const Text('Retry')),
+          TextButton(onPressed: onRetry, child: const Text('다시 시도')),
         ],
       ),
     );
@@ -167,13 +234,17 @@ class _ErrorBanner extends StatelessWidget {
 }
 
 class _TodaySummaryCard extends StatelessWidget {
-  const _TodaySummaryCard({required this.totalMinutes});
+  const _TodaySummaryCard({
+    required this.totalMinutes,
+    required this.fromDevice,
+  });
 
   final int totalMinutes;
+  final bool fromDevice;
 
   @override
   Widget build(BuildContext context) {
-    final goal = 330;
+    const goal = 330;
     final progress = totalMinutes == 0
         ? 0.0
         : (totalMinutes / goal).clamp(0.0, 1.0);
@@ -187,7 +258,7 @@ class _TodaySummaryCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Phone usage today',
+                  '오늘의 스마트폰 사용 시간',
                   style: TextStyle(
                     fontSize: 12,
                     color: AppColors.mutedText,
@@ -199,11 +270,11 @@ class _TodaySummaryCard extends StatelessWidget {
                   TextSpan(
                     children: [
                       TextSpan(
-                        text: '${hours}h ',
+                        text: '$hours시간 ',
                         style: const TextStyle(color: AppColors.navy),
                       ),
                       TextSpan(
-                        text: '${minutes}m',
+                        text: '$minutes분',
                         style: const TextStyle(color: AppColors.amber),
                       ),
                     ],
@@ -217,8 +288,10 @@ class _TodaySummaryCard extends StatelessWidget {
                 const SizedBox(height: 9),
                 Text(
                   totalMinutes == 0
-                      ? 'No server data yet.'
-                      : 'Loaded from backend.',
+                      ? '오늘 사용시간 데이터가 아직 없어요.'
+                      : fromDevice
+                      ? '휴대폰 사용정보에서 바로 불러왔어요.'
+                      : '백엔드 저장값에서 불러왔어요.',
                   style: const TextStyle(
                     fontSize: 12,
                     color: AppColors.amber,
@@ -268,9 +341,7 @@ class _AppUsageCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final rows = logs.isEmpty
         ? const [
-            {'app_name': 'Instagram', 'duration_minutes': 88},
-            {'app_name': 'YouTube', 'duration_minutes': 62},
-            {'app_name': 'KakaoTalk', 'duration_minutes': 42},
+            {'app_name': '데이터 없음', 'duration_minutes': 0},
           ]
         : logs;
     final maxMinutes = rows
@@ -282,7 +353,7 @@ class _AppUsageCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'App usage',
+            '앱별 사용 시간',
             style: TextStyle(
               color: AppColors.navy,
               fontWeight: FontWeight.w900,
@@ -291,7 +362,7 @@ class _AppUsageCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           ...rows.take(3).map((row) {
-            final name = row['app_name']?.toString() ?? 'App';
+            final name = row['app_name']?.toString() ?? '앱';
             final minutes = asInt(row['duration_minutes']);
             return UsageRow(
               initials: _initials(name),
@@ -308,6 +379,7 @@ class _AppUsageCard extends StatelessWidget {
 
   String _initials(String name) {
     final letters = name.replaceAll(' ', '');
+    if (letters.isEmpty) return '--';
     if (letters.length <= 2) return letters.toUpperCase();
     return letters.substring(0, 2).toUpperCase();
   }
@@ -329,7 +401,7 @@ class _DiagnosisCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final score = result == null ? '-' : asInt(result!['score']).toString();
-    final level = result?['level']?.toString() ?? 'No result yet';
+    final level = _levelLabel(result?['level']?.toString());
     return DesignCard(
       child: Row(
         children: [
@@ -347,7 +419,7 @@ class _DiagnosisCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'CES-D result',
+                  'CES-D 자가진단 결과',
                   style: TextStyle(
                     color: AppColors.navy,
                     fontWeight: FontWeight.w800,
@@ -356,7 +428,7 @@ class _DiagnosisCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  'Score $score/60 - $level',
+                  '점수 $score/60 - $level',
                   style: const TextStyle(
                     color: AppColors.navy,
                     fontWeight: FontWeight.w900,
@@ -369,6 +441,22 @@ class _DiagnosisCard extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  String _levelLabel(String? level) {
+    switch (level) {
+      case 'normal':
+        return '정상 범위';
+      case 'mild_depression':
+        return '경미한 우울 상태 가능성';
+      case 'severe_depression':
+        return '높은 우울 상태 가능성';
+      case null:
+      case '':
+        return '결과 없음';
+      default:
+        return level;
+    }
   }
 }
 
@@ -397,7 +485,7 @@ class _ChatCtaCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Chatbot support is available',
+                  '마음이 지칠 때 AI 챗봇이 함께할게요',
                   style: TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w900,
@@ -410,7 +498,7 @@ class _ChatCtaCard extends StatelessWidget {
                     backgroundColor: AppColors.amber,
                     foregroundColor: Colors.white,
                   ),
-                  child: const Text('Hide for 7 days'),
+                  child: const Text('7일 동안 숨기기'),
                 ),
               ],
             ),
@@ -434,7 +522,7 @@ class _MindSentenceCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Notice',
+            '마음 문구',
             style: TextStyle(
               color: AppColors.navy,
               fontWeight: FontWeight.w900,

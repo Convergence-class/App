@@ -37,9 +37,9 @@ class _SettingsPageState extends State<SettingsPage> {
       message = null;
     });
     try {
-      final consent = await _ignoreNotFound(api.getConsent());
+      final consent = await _ignore(api.getConsent());
       final data = asMap(consent?['data']);
-      final status = await _ignoreNotFound(api.getCardStatus());
+      final status = await _ignore(api.getCardStatus());
       if (!mounted) return;
       setState(() {
         dataCollection = asBool(data?['data_collection'], dataCollection);
@@ -48,6 +48,7 @@ class _SettingsPageState extends State<SettingsPage> {
         cesdCard = asBool(status?['showCESDCard'], cesdCard);
         chatbotCard = asBool(status?['showChatbotCard'], chatbotCard);
       });
+      await AppSession.instance.setChatbotOptIn(chatbotOptin);
     } catch (e) {
       if (!mounted) return;
       setState(() => message = e.toString());
@@ -56,7 +57,7 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<Map<String, dynamic>?> _ignoreNotFound(
+  Future<Map<String, dynamic>?> _ignore(
     Future<Map<String, dynamic>> future,
   ) async {
     try {
@@ -77,8 +78,9 @@ class _SettingsPageState extends State<SettingsPage> {
         notification: notification,
         chatbotOptin: chatbotOptin,
       );
+      await AppSession.instance.setChatbotOptIn(chatbotOptin);
       if (!mounted) return;
-      setState(() => message = '설정이 서버에 저장되었습니다.');
+      setState(() => message = '설정을 저장했어요.');
     } catch (e) {
       if (!mounted) return;
       setState(() => message = e.toString());
@@ -88,7 +90,11 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _logout() async {
-    await api.logout();
+    try {
+      await api.logout();
+    } catch (_) {
+      await AppSession.instance.clear();
+    }
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const LoginPage()),
@@ -161,16 +167,16 @@ class _ProfileCard extends StatelessWidget {
           const CircleAvatar(
             radius: 24,
             backgroundColor: AppColors.blueSoft,
-            child: Text('🙂', style: TextStyle(fontSize: 24)),
+            child: Icon(Icons.person_rounded, color: AppColors.navy),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '김마인드',
-                  style: TextStyle(
+                Text(
+                  session.nickname ?? '사용자',
+                  style: const TextStyle(
                     color: AppColors.navy,
                     fontWeight: FontWeight.w900,
                     fontSize: 17,
@@ -178,7 +184,7 @@ class _ProfileCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  session.email ?? '로그인 사용자',
+                  session.email ?? '로그인된 사용자',
                   style: const TextStyle(
                     color: AppColors.mutedText,
                     fontSize: 12,
@@ -216,7 +222,7 @@ class _MessageCard extends StatelessWidget {
     final isError =
         message.contains('Exception') ||
         message.contains('[') ||
-        message.contains('실패');
+        message.toLowerCase().contains('error');
     return DesignCard(
       color: isError ? const Color(0xfffff4f2) : const Color(0xfff4fff5),
       child: Text(
@@ -259,7 +265,7 @@ class _ConsentCard extends StatelessWidget {
             children: [
               const Expanded(
                 child: Text(
-                  '개인정보 수집 동의',
+                  '동의 설정',
                   style: TextStyle(
                     color: AppColors.navy,
                     fontWeight: FontWeight.w900,
@@ -277,28 +283,28 @@ class _ConsentCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           const Text(
-            '서비스 이용을 위해 아래 항목에 동의해주세요.',
+            '데이터와 챗봇 이용 동의를 관리합니다.',
             style: TextStyle(color: AppColors.mutedText, fontSize: 11),
           ),
           const SizedBox(height: 12),
           _SettingSwitch(
             icon: Icons.shield_outlined,
             title: '개인정보 수집 동의',
-            subtitle: '서비스 이용을 위한 필수 항목입니다.',
+            subtitle: '서비스 이용을 위한 필수 동의입니다.',
             enabled: dataCollection,
             onChanged: onDataCollectionChanged,
           ),
           _SettingSwitch(
             icon: Icons.notifications_none_rounded,
-            title: '알림 수신 동의',
-            subtitle: '중요 알림 및 주기적 안내를 받습니다.',
+            title: '사용시간 알림 동의',
+            subtitle: '스마트폰 사용 시간이 많을 때 알림을 받습니다.',
             enabled: notification,
             onChanged: onNotificationChanged,
           ),
           _SettingSwitch(
             icon: Icons.smart_toy_outlined,
-            title: '챗봇 이용 동의',
-            subtitle: 'AI 챗봇 서비스 이용에 동의합니다.',
+            title: 'AI 챗봇 이용 동의',
+            subtitle: '챗봇 대화를 사용하기 전에 필요합니다.',
             enabled: chatbotOptin,
             onChanged: onChatbotChanged,
           ),
@@ -321,7 +327,7 @@ class _VisibilityCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            '카드 노출 상태',
+            '홈 카드 노출 상태',
             style: TextStyle(
               color: AppColors.navy,
               fontWeight: FontWeight.w900,
@@ -330,7 +336,7 @@ class _VisibilityCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           const Text(
-            '서버가 판단한 홈 카드 노출 상태입니다.',
+            '백엔드에서 계산한 읽기 전용 상태입니다.',
             style: TextStyle(color: AppColors.mutedText, fontSize: 11),
           ),
           const SizedBox(height: 12),

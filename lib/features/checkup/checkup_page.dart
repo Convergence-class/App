@@ -82,9 +82,10 @@ class _CheckupPageState extends State<CheckupPage> {
   @override
   Widget build(BuildContext context) {
     final total = questions.isEmpty ? 20 : questions.length;
-    final text = questions.isEmpty
-        ? 'Loading question...'
-        : questions[index]['text']?.toString() ?? '';
+    final question = questions.isEmpty ? null : questions[index];
+    final text = question == null
+        ? '문항을 불러오는 중입니다...'
+        : _questionText(question);
     final selected = answers.isEmpty ? -1 : answers[index];
 
     return SafeArea(
@@ -107,7 +108,7 @@ class _CheckupPageState extends State<CheckupPage> {
                 ),
                 const SizedBox(width: 8),
                 const Text(
-                  'CES-D Check',
+                  'CES-D 자가진단',
                   style: TextStyle(
                     color: AppColors.navy,
                     fontWeight: FontWeight.w900,
@@ -141,7 +142,7 @@ class _CheckupPageState extends State<CheckupPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'During the past week,',
+                            '지난 1주일 동안,',
                             style: TextStyle(
                               color: AppColors.mutedText,
                               fontSize: 12,
@@ -157,7 +158,16 @@ class _CheckupPageState extends State<CheckupPage> {
                               height: 1.4,
                             ),
                           ),
-                          const SizedBox(height: 20),
+                          const SizedBox(height: 14),
+                          const Text(
+                            '각 문항에 대해 지난 일주일 동안 얼마나 자주 그랬는지 선택해주세요. 역채점 문항은 서버에서 자동 계산됩니다.',
+                            style: TextStyle(
+                              color: AppColors.mutedText,
+                              fontSize: 12,
+                              height: 1.45,
+                            ),
+                          ),
+                          const SizedBox(height: 18),
                           const Center(
                             child: CircleAvatar(
                               radius: 34,
@@ -172,26 +182,26 @@ class _CheckupPageState extends State<CheckupPage> {
                           const SizedBox(height: 20),
                           _ChoiceTile(
                             selected: selected == 0,
-                            title: 'Rarely',
-                            subtitle: 'Less than 1 day',
+                            title: '극히 드물다',
+                            subtitle: '1일 이하',
                             onTap: () => _select(0),
                           ),
                           _ChoiceTile(
                             selected: selected == 1,
-                            title: 'Some days',
-                            subtitle: '1-2 days',
+                            title: '가끔 있었다',
+                            subtitle: '1-2일',
                             onTap: () => _select(1),
                           ),
                           _ChoiceTile(
                             selected: selected == 2,
-                            title: 'Often',
-                            subtitle: '3-4 days',
+                            title: '자주 있었다',
+                            subtitle: '3-4일',
                             onTap: () => _select(2),
                           ),
                           _ChoiceTile(
                             selected: selected == 3,
-                            title: 'Most days',
-                            subtitle: '5-7 days',
+                            title: '대부분 그랬다',
+                            subtitle: '5-7일',
                             onTap: () => _select(3),
                           ),
                         ],
@@ -203,8 +213,8 @@ class _CheckupPageState extends State<CheckupPage> {
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: YellowButton(
                         label: index == total - 1
-                            ? (submitting ? 'Submitting...' : 'Submit result')
-                            : 'Next question',
+                            ? (submitting ? '제출 중...' : '결과 제출')
+                            : '다음 문항',
                         onPressed: selected == -1 || submitting || loading
                             ? null
                             : _next,
@@ -218,7 +228,35 @@ class _CheckupPageState extends State<CheckupPage> {
       ),
     );
   }
+
+  String _questionText(Map<String, dynamic> question) {
+    final no = asInt(question['no'], index + 1);
+    return _koreanQuestions[no] ?? question['text']?.toString() ?? '';
+  }
 }
+
+const _koreanQuestions = {
+  1: '평소에는 아무렇지도 않던 일들이 귀찮고 신경 쓰였다.',
+  2: '먹고 싶지 않았다. 식욕이 없었다.',
+  3: '가족이나 친구가 도와주어도 울적한 기분을 떨쳐버릴 수 없었다.',
+  4: '다른 사람들만큼 능력이 있다고 느꼈다.',
+  5: '하고 있는 일에 마음을 집중하기 어려웠다.',
+  6: '우울하다고 느꼈다.',
+  7: '하는 일마다 힘들게 느껴졌다.',
+  8: '앞날에 대해 희망적으로 느꼈다.',
+  9: '내 인생은 실패작이라고 생각했다.',
+  10: '두려움을 느꼈다.',
+  11: '잠을 설쳤다.',
+  12: '행복하다고 느꼈다.',
+  13: '평소보다 말을 적게 했다.',
+  14: '외로움을 느꼈다.',
+  15: '사람들이 나에게 차갑게 대한다고 느꼈다.',
+  16: '생활이 즐거웠다.',
+  17: '갑자기 울음이 나왔다.',
+  18: '슬픔을 느꼈다.',
+  19: '사람들이 나를 싫어한다고 느꼈다.',
+  20: '도무지 무슨 일이든 시작하기가 힘들었다.',
+};
 
 class _ProgressHeader extends StatelessWidget {
   const _ProgressHeader({required this.current, required this.total});
@@ -246,7 +284,7 @@ class _ProgressHeader extends StatelessWidget {
                 ),
               ),
               Text(
-                '${(progress * 100).round()}% done',
+                '${(progress * 100).round()}% 완료',
                 style: const TextStyle(
                   color: AppColors.mutedText,
                   fontSize: 11,
@@ -378,13 +416,13 @@ class _ResultCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final score = asInt(result['score']);
-    final level = result['level']?.toString() ?? '-';
+    final info = _levelInfo(score);
     return DesignCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Result submitted',
+            'CES-D 자가진단 결과',
             style: TextStyle(
               color: AppColors.navy,
               fontWeight: FontWeight.w900,
@@ -393,28 +431,71 @@ class _ResultCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            'Score $score/60',
+            '$score / 60점',
             style: const TextStyle(
               color: AppColors.amber,
               fontWeight: FontWeight.w900,
               fontSize: 28,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           Text(
-            level,
+            info.title,
             style: const TextStyle(
               color: AppColors.navy,
               fontWeight: FontWeight.w900,
-              fontSize: 15,
+              fontSize: 16,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            info.description,
+            style: const TextStyle(
+              color: AppColors.mutedText,
+              fontSize: 13,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '이 결과는 의학적 진단이 아니라 선별 검사입니다. 점수가 높거나 힘든 상태가 계속되면 전문가 상담, 학교/직장 상담실, 가까운 정신건강복지센터의 도움을 받아보세요.',
+            style: TextStyle(
+              color: AppColors.mutedText,
+              fontSize: 12,
+              height: 1.45,
             ),
           ),
           const SizedBox(height: 14),
-          YellowButton(label: 'Restart', onPressed: onRestart),
+          YellowButton(label: '다시 검사하기', onPressed: onRestart),
         ],
       ),
     );
   }
+
+  _LevelInfo _levelInfo(int score) {
+    if (score <= 15) {
+      return const _LevelInfo(
+        '정상 범위',
+        '최근 1주일 기준으로 우울 관련 증상이 두드러지게 높지는 않습니다. 다만 수면, 식사, 집중력, 대인관계 변화는 계속 관찰해보는 것이 좋아요.',
+      );
+    }
+    if (score <= 24) {
+      return const _LevelInfo(
+        '경미한 우울 상태 가능성',
+        '우울감, 의욕 저하, 피로감, 수면 불편, 집중 어려움이 어느 정도 나타났을 수 있습니다. 휴식과 생활 리듬을 먼저 점검하고, 2주 이상 지속되면 상담을 권장합니다.',
+      );
+    }
+    return const _LevelInfo(
+      '높은 우울 상태 가능성',
+      '우울감이나 무기력, 수면 문제, 일상 시작의 어려움이 비교적 뚜렷할 수 있습니다. 혼자 견디기보다 신뢰할 수 있는 사람에게 알리고, 가능한 빠르게 전문 상담이나 진료를 받아보는 것이 좋습니다.',
+    );
+  }
+}
+
+class _LevelInfo {
+  const _LevelInfo(this.title, this.description);
+  final String title;
+  final String description;
 }
 
 class _ErrorCard extends StatelessWidget {
@@ -437,7 +518,7 @@ class _ErrorCard extends StatelessWidget {
               style: const TextStyle(color: Colors.redAccent, fontSize: 12),
             ),
           ),
-          TextButton(onPressed: onRetry, child: const Text('Retry')),
+          TextButton(onPressed: onRetry, child: const Text('다시 시도')),
         ],
       ),
     );

@@ -13,10 +13,11 @@ class BackendApi {
   Future<Map<String, dynamic>> signUp({
     required String email,
     required String password,
+    required String nickname,
   }) {
     return _client.post(
       '/api/auth/signup',
-      body: {'email': email, 'password': password},
+      body: {'email': email, 'password': password, 'nickname': nickname},
       auth: false,
     );
   }
@@ -33,9 +34,14 @@ class BackendApi {
     final token = result['access_token']?.toString();
     final userId = result['user_id']?.toString();
     if (token == null || userId == null) {
-      throw const FormatException('로그인 응답에 access_token 또는 user_id가 없습니다.');
+      throw const FormatException('로그인 응답에 토큰 또는 사용자 ID가 없습니다.');
     }
-    await AppSession.instance.save(token: token, userId: userId, email: email);
+    await AppSession.instance.save(
+      token: token,
+      userId: userId,
+      email: result['email']?.toString() ?? email,
+      nickname: result['nickname']?.toString(),
+    );
     return result;
   }
 
@@ -70,9 +76,8 @@ class BackendApi {
     );
   }
 
-  Future<Map<String, dynamic>> getCesdQuestions() {
-    return _client.get('/api/cesd/questions');
-  }
+  Future<Map<String, dynamic>> getCesdQuestions() =>
+      _client.get('/api/cesd/questions');
 
   Future<Map<String, dynamic>> submitCesd(List<int> answers) {
     return _client.post(
@@ -85,10 +90,13 @@ class BackendApi {
     return _client.get('/api/cesd/result', query: {'user_id': _userId});
   }
 
-  Future<Map<String, dynamic>> sendChatMessage(String message) {
+  Future<Map<String, dynamic>> sendChatMessage(
+    String message, {
+    List<Map<String, String>> history = const [],
+  }) {
     return _client.post(
       '/api/chat/message',
-      body: {'user_id': _userId, 'message': message},
+      body: {'user_id': _userId, 'message': message, 'history': history},
     );
   }
 
@@ -99,9 +107,8 @@ class BackendApi {
     );
   }
 
-  Future<Map<String, dynamic>> getRandomNotice() {
-    return _client.get('/api/notice/random');
-  }
+  Future<Map<String, dynamic>> getRandomNotice() =>
+      _client.get('/api/notice/random');
 
   Future<Map<String, dynamic>> getConsent() {
     return _client.get('/api/consent', query: {'user_id': _userId});

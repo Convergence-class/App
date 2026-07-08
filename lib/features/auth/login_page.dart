@@ -15,6 +15,7 @@ class LoginPage extends StatefulWidget {
 
 class _LoginPageState extends State<LoginPage> {
   final api = BackendApi();
+  final nameController = TextEditingController();
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
   bool isLogin = true;
@@ -23,17 +24,29 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
+    nameController.dispose();
     emailController.dispose();
     passwordController.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
+    final nickname = nameController.text.trim();
     final email = emailController.text.trim();
     final password = passwordController.text;
-    if (email.isEmpty || password.isEmpty) {
-      setState(() => message = '이메일과 비밀번호를 입력해주세요.');
+
+    if (email.isEmpty || password.isEmpty || (!isLogin && nickname.isEmpty)) {
+      setState(
+        () => message = isLogin
+            ? '이메일과 비밀번호를 입력해주세요.'
+            : '이름, 이메일, 비밀번호를 모두 입력해주세요.',
+      );
       return;
+    }
+
+    if (!isLogin) {
+      final agreed = await _showSignupConsentDialog();
+      if (agreed != true) return;
     }
 
     setState(() {
@@ -43,7 +56,7 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       if (!isLogin) {
-        await api.signUp(email: email, password: password);
+        await api.signUp(email: email, password: password, nickname: nickname);
       }
       await api.login(email: email, password: password);
       if (!mounted) return;
@@ -58,9 +71,74 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  void _openApp({int tab = 0}) {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => AppShell(initialIndex: tab)),
+  Future<bool?> _showSignupConsentDialog() {
+    var personal = false;
+    var data = false;
+    var notification = false;
+    var chatbot = false;
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final allRequired = personal && data;
+            return AlertDialog(
+              title: const Text('회원가입 동의'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CheckboxListTile(
+                      value: personal,
+                      onChanged: (value) =>
+                          setModalState(() => personal = value ?? false),
+                      title: const Text('필수: 개인정보 수집 동의'),
+                      subtitle: const Text('계정 생성과 서비스 제공을 위해 필요합니다.'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                    CheckboxListTile(
+                      value: data,
+                      onChanged: (value) =>
+                          setModalState(() => data = value ?? false),
+                      title: const Text('필수: 사용시간 및 자가진단 데이터 처리 동의'),
+                      subtitle: const Text('사용시간 분석과 CES-D 결과 저장에 필요합니다.'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                    CheckboxListTile(
+                      value: notification,
+                      onChanged: (value) =>
+                          setModalState(() => notification = value ?? false),
+                      title: const Text('선택: 사용시간 알림 동의'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                    CheckboxListTile(
+                      value: chatbot,
+                      onChanged: (value) =>
+                          setModalState(() => chatbot = value ?? false),
+                      title: const Text('선택: AI 챗봇 이용 동의'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: allRequired
+                      ? () => Navigator.pop(context, true)
+                      : null,
+                  child: const Text('동의하고 가입'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -69,77 +147,57 @@ class _LoginPageState extends State<LoginPage> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            return SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  minHeight: constraints.maxHeight - 46,
-                ),
-                child: Column(
-                  children: [
-                    const SizedBox(height: 4),
-                    const AppLogo(),
-                    const SizedBox(height: 28),
-                    Text.rich(
-                      const TextSpan(
-                        children: [
-                          TextSpan(text: '디지털 균형으로\n'),
-                          TextSpan(
-                            text: '마음의 여유를\n',
-                            style: TextStyle(color: AppColors.amber),
-                          ),
-                          TextSpan(text: '찾아보세요'),
-                        ],
-                      ),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: AppColors.navy,
-                        fontSize: 24,
-                        height: 1.35,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    const Text(
-                      '스마트폰 사용을 건강하게 관리하고,\n나의 감정과 마음을 돌보는 여정을 함께해요.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: AppColors.mutedText,
-                        fontSize: 12,
-                        height: 1.55,
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    _AuthCard(
-                      isLogin: isLogin,
-                      loading: loading,
-                      message: message,
-                      emailController: emailController,
-                      passwordController: passwordController,
-                      onTabChanged: (value) => setState(() {
-                        isLogin = value;
-                        message = null;
-                      }),
-                      onSubmit: _submit,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'API: ${ApiConfig.baseUrl}',
-                      style: const TextStyle(
-                        color: AppColors.mutedText,
-                        fontSize: 10,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    _ChatHelpCard(onTap: () => _openApp(tab: 3)),
-                    const SizedBox(height: 14),
-                  ],
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
+          child: Column(
+            children: [
+              const SizedBox(height: 4),
+              const AppLogo(),
+              const SizedBox(height: 28),
+              const Text(
+                '디지털 균형으로\n마음의 여유를 찾아보세요',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: AppColors.navy,
+                  fontSize: 24,
+                  height: 1.35,
+                  fontWeight: FontWeight.w900,
                 ),
               ),
-            );
-          },
+              const SizedBox(height: 14),
+              const Text(
+                '스마트폰 사용을 건강하게 관리하고,\n나의 감정과 마음을 돌보는 여정을 함께해요.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: AppColors.mutedText,
+                  fontSize: 12,
+                  height: 1.55,
+                ),
+              ),
+              const SizedBox(height: 18),
+              _AuthCard(
+                isLogin: isLogin,
+                loading: loading,
+                message: message,
+                nameController: nameController,
+                emailController: emailController,
+                passwordController: passwordController,
+                onTabChanged: (value) => setState(() {
+                  isLogin = value;
+                  message = null;
+                }),
+                onSubmit: _submit,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'API: ${ApiConfig.baseUrl}',
+                style: const TextStyle(
+                  color: AppColors.mutedText,
+                  fontSize: 10,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -151,6 +209,7 @@ class _AuthCard extends StatelessWidget {
     required this.isLogin,
     required this.loading,
     required this.message,
+    required this.nameController,
     required this.emailController,
     required this.passwordController,
     required this.onTabChanged,
@@ -160,6 +219,7 @@ class _AuthCard extends StatelessWidget {
   final bool isLogin;
   final bool loading;
   final String? message;
+  final TextEditingController nameController;
   final TextEditingController emailController;
   final TextEditingController passwordController;
   final ValueChanged<bool> onTabChanged;
@@ -198,6 +258,14 @@ class _AuthCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 14),
+          if (!isLogin) ...[
+            _AuthField(
+              controller: nameController,
+              icon: Icons.person_outline_rounded,
+              hint: '이름을 입력해주세요',
+            ),
+            const SizedBox(height: 10),
+          ],
           _AuthField(
             controller: emailController,
             icon: Icons.mail_outline_rounded,
@@ -211,18 +279,8 @@ class _AuthCard extends StatelessWidget {
             hint: '비밀번호를 입력해주세요',
             obscure: true,
           ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              onPressed: () {},
-              style: TextButton.styleFrom(
-                foregroundColor: AppColors.navy,
-                visualDensity: VisualDensity.compact,
-              ),
-              child: const Text('비밀번호 찾기 >', style: TextStyle(fontSize: 11)),
-            ),
-          ),
           if (message != null) ...[
+            const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerLeft,
               child: Text(
@@ -234,10 +292,10 @@ class _AuthCard extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 10),
           ],
+          const SizedBox(height: 14),
           YellowButton(
-            label: loading ? '처리 중...' : (isLogin ? '로그인' : '회원가입'),
+            label: loading ? '잠시만요...' : (isLogin ? '로그인' : '회원가입'),
             onPressed: loading ? null : onSubmit,
           ),
           const SizedBox(height: 10),
@@ -316,13 +374,6 @@ class _AuthField extends StatelessWidget {
         filled: true,
         fillColor: AppColors.field,
         prefixIcon: Icon(icon, color: AppColors.mutedText, size: 20),
-        suffixIcon: obscure
-            ? const Icon(
-                Icons.visibility_outlined,
-                color: AppColors.mutedText,
-                size: 18,
-              )
-            : null,
         hintText: hint,
         hintStyle: const TextStyle(color: Color(0xff9b8f80), fontSize: 13),
         border: OutlineInputBorder(
@@ -332,73 +383,6 @@ class _AuthField extends StatelessWidget {
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 12,
           vertical: 13,
-        ),
-      ),
-    );
-  }
-}
-
-class _ChatHelpCard extends StatelessWidget {
-  const _ChatHelpCard({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xffd5e8f8)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.06),
-              blurRadius: 7,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            const CircleAvatar(
-              radius: 18,
-              backgroundColor: AppColors.blueSoft,
-              child: Icon(
-                Icons.smart_toy_outlined,
-                color: AppColors.navy,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 12),
-            const Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '도움이 필요하신가요?',
-                    style: TextStyle(
-                      color: AppColors.navy,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 12,
-                    ),
-                  ),
-                  SizedBox(height: 3),
-                  Text(
-                    'AI 챗봇과 24시간 대화할 수 있어요.',
-                    style: TextStyle(color: AppColors.mutedText, fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-            TextButton(
-              onPressed: onTap,
-              child: const Text('챗봇 대화하기', style: TextStyle(fontSize: 11)),
-            ),
-          ],
         ),
       ),
     );

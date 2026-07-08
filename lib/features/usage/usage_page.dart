@@ -3,7 +3,19 @@ import 'package:flutter/material.dart';
 import 'package:emotion_app/core/theme/app_colors.dart';
 import 'package:emotion_app/data/api/api_helpers.dart';
 import 'package:emotion_app/data/api/backend_api.dart';
+import 'package:emotion_app/data/device/device_usage_service.dart';
 import 'package:emotion_app/shared/widgets/app_widgets.dart';
+
+enum _UsagePeriod {
+  today('오늘', 1),
+  week('1주', 7),
+  month('1달', 30);
+
+  const _UsagePeriod(this.label, this.days);
+
+  final String label;
+  final int days;
+}
 
 class UsagePage extends StatefulWidget {
   const UsagePage({super.key});
@@ -14,11 +26,20 @@ class UsagePage extends StatefulWidget {
 
 class _UsagePageState extends State<UsagePage> {
   final api = BackendApi();
+  final deviceUsage = DeviceUsageService();
+
   bool loading = true;
-  bool saving = false;
+  bool syncing = false;
+  bool hasUsagePermission = false;
+  bool hasAccessibilityPermission = false;
+  bool alertShown = false;
   String? error;
   int totalMinutes = 0;
+  _UsagePeriod period = _UsagePeriod.today;
   List<Map<String, dynamic>> logs = [];
+  List<DeviceUsageApp> deviceLogs = [];
+  List<_DailyPoint> dailyPoints = [];
+  int _loadVersion = 0;
 
   @override
   void initState() {
@@ -27,58 +48,211 @@ class _UsagePageState extends State<UsagePage> {
   }
 
   Future<void> _load() async {
+    final loadVersion = ++_loadVersion;
+    final requestedPeriod = period;
     setState(() {
       loading = true;
       error = null;
     });
+
     try {
-      final response = await api.getUsageSummary(date: _today());
-      final data = asMap(response['data']);
+      final range = _rangeFor(requestedPeriod);
+      var serverLogs = <Map<String, dynamic>>[];
+
+      hasUsagePermission = await deviceUsage.hasPermission();
+      hasAccessibilityPermission = await deviceUsage
+          .hasAccessibilityPermission();
+
+      if (hasUsagePermission) {
+        final overview = await deviceUsage.getUsageOverviewRange(
+          range.start,
+          range.end,
+        );
+        deviceLogs = overview.apps;
+        dailyPoints = _fillDailyPoints(requestedPeriod, overview.dailyTotals);
+      } else {
+        deviceLogs = [];
+        dailyPoints = _fillDailyPoints(requestedPeriod, const []);
+      }
+
+      if (requestedPeriod == _UsagePeriod.today) {
+        final response = await _ignore(
+          api.getUsageSummary(date: _todayKstKey()),
+        );
+        final data = asMap(response?['data']);
+        serverLogs = asMapList(data?['usage_logs']);
+      }
+
+      if (loadVersion != _loadVersion || requestedPeriod != period) return;
       if (!mounted) return;
       setState(() {
-        totalMinutes = asInt(data?['total_usage_minutes']);
-        logs = asMapList(data?['usage_logs']);
+        logs = deviceLogs.isNotEmpty
+            ? deviceLogs
+                  .map(
+                    (item) => {
+                      'app_name': item.appName,
+                      'duration_minutes': item.durationMinutes,
+                    },
+                  )
+                  .toList()
+            : serverLogs;
+
+        final deviceTotal = dailyPoints.fold<int>(
+          0,
+          (sum, point) => sum + point.minutes,
+        );
+        totalMinutes = deviceTotal > 0
+            ? deviceTotal
+            : logs.fold<int>(
+                0,
+                (sum, row) => sum + asInt(row['duration_minutes']),
+              );
+
+        if (requestedPeriod == _UsagePeriod.today &&
+            dailyPoints.every((point) => point.minutes == 0) &&
+            totalMinutes > 0) {
+          dailyPoints = [_DailyPoint(label: '오늘', minutes: totalMinutes)];
+        }
       });
+      _showHighUsageAlertIfNeeded();
     } catch (e) {
+      if (loadVersion != _loadVersion || requestedPeriod != period) return;
       if (!mounted) return;
       setState(() => error = e.toString());
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted && loadVersion == _loadVersion && requestedPeriod == period) {
+        setState(() => loading = false);
+      }
     }
   }
 
-  Future<void> _saveSample() async {
-    setState(() {
-      saving = true;
-      error = null;
-    });
+  Future<Map<String, dynamic>?> _ignore(
+    Future<Map<String, dynamic>> future,
+  ) async {
     try {
-      await api.logUsage(
-        appName: 'YouTube',
-        durationMinutes: 15,
-        loggedAt: DateTime.now(),
-      );
-      await _load();
+      return await future;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _syncDeviceUsage() async {
+    if (!hasUsagePermission) {
+      await deviceUsage.openSettings();
+      return;
+    }
+
+    setState(() => syncing = true);
+    try {
+      for (final item in deviceLogs.take(20)) {
+        await api.logUsage(
+          appName: item.appName,
+          durationMinutes: item.durationMinutes,
+          loggedAt: DateTime.now(),
+        );
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('현재 사용시간을 서버에 저장했어요.')));
     } catch (e) {
       if (!mounted) return;
       setState(() => error = e.toString());
     } finally {
-      if (mounted) setState(() => saving = false);
+      if (mounted) setState(() => syncing = false);
     }
   }
 
-  String _today() {
-    final now = DateTime.now();
-    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+  Future<void> _openUsageSettings() async {
+    await deviceUsage.openSettings();
+  }
+
+  Future<void> _openAccessibilitySettings() async {
+    await deviceUsage.openAccessibilitySettings();
+  }
+
+  void _changePeriod(_UsagePeriod next) {
+    if (period == next) return;
+    setState(() {
+      period = next;
+      alertShown = false;
+    });
+    _load();
+  }
+
+  void _showHighUsageAlertIfNeeded() {
+    if (!mounted ||
+        alertShown ||
+        period != _UsagePeriod.today ||
+        totalMinutes < 300) {
+      return;
+    }
+    alertShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('사용시간 알림'),
+          content: Text(
+            '오늘 스마트폰 사용시간이 ${formatMinutes(totalMinutes)}입니다. 잠깐 쉬어가도 좋아요.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('확인'),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+
+  ({DateTime start, DateTime end}) _rangeFor(_UsagePeriod value) {
+    final nowUtc = DateTime.now().toUtc();
+    final nowKst = DeviceUsageService.nowKst();
+    final startKst = DateTime(
+      nowKst.year,
+      nowKst.month,
+      nowKst.day,
+    ).subtract(Duration(days: value.days - 1));
+    return (start: DeviceUsageService.kstMidnightAsUtc(startKst), end: nowUtc);
+  }
+
+  String _todayKstKey() =>
+      DeviceUsageService.dateKey(DeviceUsageService.nowKst());
+
+  List<_DailyPoint> _fillDailyPoints(
+    _UsagePeriod value,
+    List<DailyUsageTotal> totals,
+  ) {
+    final byDate = {for (final item in totals) item.date: item.durationMinutes};
+    final nowKst = DeviceUsageService.nowKst();
+    final firstDay = DateTime(
+      nowKst.year,
+      nowKst.month,
+      nowKst.day,
+    ).subtract(Duration(days: value.days - 1));
+    return List.generate(value.days, (index) {
+      final day = firstDay.add(Duration(days: index));
+      return _DailyPoint(
+        label: value == _UsagePeriod.today ? '오늘' : '${day.month}/${day.day}',
+        minutes: byDate[DeviceUsageService.dateKey(day)] ?? 0,
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final chartValues = dailyPoints
+        .map((point) => point.minutes <= 0 ? 1.0 : point.minutes.toDouble())
+        .toList();
+
     return SafeArea(
       bottom: false,
       child: Column(
         children: [
-          const AppHeader(title: 'Usage'),
+          const AppHeader(title: '사용시간'),
           Expanded(
             child: RefreshIndicator(
               onRefresh: _load,
@@ -87,24 +261,33 @@ class _UsagePageState extends State<UsagePage> {
                 padding: const EdgeInsets.only(bottom: 18),
                 child: Column(
                   children: [
-                    const _PeriodTabs(),
+                    _PeriodTabs(selected: period, onChanged: _changePeriod),
                     if (error != null)
                       _ErrorCard(message: error!, onRetry: _load),
+                    if (!hasUsagePermission || !hasAccessibilityPermission)
+                      _PermissionCard(
+                        hasUsagePermission: hasUsagePermission,
+                        hasAccessibilityPermission: hasAccessibilityPermission,
+                        onOpenUsageSettings: _openUsageSettings,
+                        onOpenAccessibilitySettings: _openAccessibilitySettings,
+                      ),
                     _UsageSummaryCard(
+                      period: period,
                       totalMinutes: totalMinutes,
                       loading: loading,
+                      chartValues: chartValues,
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
                       child: YellowButton(
-                        label: saving
-                            ? 'Saving...'
-                            : 'Save sample 15 min usage',
-                        onPressed: saving ? null : _saveSample,
+                        label: hasUsagePermission
+                            ? (syncing ? '저장 중...' : '현재 사용시간 서버에 저장')
+                            : '사용정보 접근 권한 열기',
+                        onPressed: syncing ? null : _syncDeviceUsage,
                       ),
                     ),
                     _UsageListCard(logs: logs),
-                    _WeeklyCard(values: _weeklyValues()),
+                    _DailyUsageCard(period: period, points: dailyPoints),
                   ],
                 ),
               ),
@@ -114,10 +297,64 @@ class _UsagePageState extends State<UsagePage> {
       ),
     );
   }
+}
 
-  List<double> _weeklyValues() {
-    final today = totalMinutes == 0 ? 4.0 : totalMinutes / 15;
-    return [8, 10, 13, 16, 13, 15, today.clamp(1, 20).toDouble()];
+class _DailyPoint {
+  const _DailyPoint({required this.label, required this.minutes});
+
+  final String label;
+  final int minutes;
+}
+
+class _PermissionCard extends StatelessWidget {
+  const _PermissionCard({
+    required this.hasUsagePermission,
+    required this.hasAccessibilityPermission,
+    required this.onOpenUsageSettings,
+    required this.onOpenAccessibilitySettings,
+  });
+
+  final bool hasUsagePermission;
+  final bool hasAccessibilityPermission;
+  final VoidCallback onOpenUsageSettings;
+  final VoidCallback onOpenAccessibilitySettings;
+
+  @override
+  Widget build(BuildContext context) {
+    return DesignCard(
+      color: const Color(0xfffffbec),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '권한이 필요해요',
+            style: TextStyle(
+              color: AppColors.navy,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            '사용시간 집계는 사용정보 접근 권한이 필요하고, 현재 앱 감지 알림은 접근성 권한을 켜야 정확해집니다.',
+            style: TextStyle(color: AppColors.mutedText, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          if (!hasUsagePermission)
+            YellowButton(
+              label: '사용정보 접근 권한 열기',
+              onPressed: onOpenUsageSettings,
+            ),
+          if (!hasUsagePermission && !hasAccessibilityPermission)
+            const SizedBox(height: 8),
+          if (!hasAccessibilityPermission)
+            YellowButton(
+              label: '접근성 권한 열기',
+              onPressed: onOpenAccessibilitySettings,
+              filled: false,
+            ),
+        ],
+      ),
+    );
   }
 }
 
@@ -141,7 +378,7 @@ class _ErrorCard extends StatelessWidget {
               style: const TextStyle(color: Colors.redAccent, fontSize: 12),
             ),
           ),
-          TextButton(onPressed: onRetry, child: const Text('Retry')),
+          TextButton(onPressed: onRetry, child: const Text('다시 시도')),
         ],
       ),
     );
@@ -149,7 +386,10 @@ class _ErrorCard extends StatelessWidget {
 }
 
 class _PeriodTabs extends StatelessWidget {
-  const _PeriodTabs();
+  const _PeriodTabs({required this.selected, required this.onChanged});
+
+  final _UsagePeriod selected;
+  final ValueChanged<_UsagePeriod> onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -160,39 +400,52 @@ class _PeriodTabs extends StatelessWidget {
         color: const Color(0xffd9cdb9),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: const Row(
-        children: [
-          _PeriodTab(label: 'Today', selected: true),
-          _PeriodTab(label: 'Week'),
-          _PeriodTab(label: 'Month'),
-        ],
+      child: Row(
+        children: _UsagePeriod.values
+            .map(
+              (period) => _PeriodTab(
+                label: period.label,
+                selected: selected == period,
+                onTap: () => onChanged(period),
+              ),
+            )
+            .toList(),
       ),
     );
   }
 }
 
 class _PeriodTab extends StatelessWidget {
-  const _PeriodTab({required this.label, this.selected = false});
+  const _PeriodTab({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   final String label;
   final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Expanded(
-      child: Container(
-        height: 32,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? AppColors.amber : Colors.transparent,
-          borderRadius: BorderRadius.circular(9),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? Colors.white : AppColors.mutedText,
-            fontWeight: FontWeight.w900,
-            fontSize: 12,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(9),
+        child: Container(
+          height: 32,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? AppColors.amber : Colors.transparent,
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : AppColors.mutedText,
+              fontWeight: FontWeight.w900,
+              fontSize: 12,
+            ),
           ),
         ),
       ),
@@ -201,25 +454,38 @@ class _PeriodTab extends StatelessWidget {
 }
 
 class _UsageSummaryCard extends StatelessWidget {
-  const _UsageSummaryCard({required this.totalMinutes, required this.loading});
+  const _UsageSummaryCard({
+    required this.period,
+    required this.totalMinutes,
+    required this.loading,
+    required this.chartValues,
+  });
 
+  final _UsagePeriod period;
   final int totalMinutes;
   final bool loading;
+  final List<double> chartValues;
 
   @override
   Widget build(BuildContext context) {
     final hours = totalMinutes ~/ 60;
     final minutes = totalMinutes % 60;
+    final title = switch (period) {
+      _UsagePeriod.today => '오늘 총 사용 시간',
+      _UsagePeriod.week => '최근 7일 총 사용 시간',
+      _UsagePeriod.month => '최근 30일 총 사용 시간',
+    };
+
     return DesignCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Total usage today',
-                  style: TextStyle(
+                  title,
+                  style: const TextStyle(
                     fontSize: 12,
                     color: AppColors.mutedText,
                     fontWeight: FontWeight.w700,
@@ -239,11 +505,11 @@ class _UsageSummaryCard extends StatelessWidget {
             TextSpan(
               children: [
                 TextSpan(
-                  text: '${hours}h ',
+                  text: '$hours시간 ',
                   style: const TextStyle(color: AppColors.navy),
                 ),
                 TextSpan(
-                  text: '${minutes}m',
+                  text: '$minutes분',
                   style: const TextStyle(color: AppColors.amber),
                 ),
               ],
@@ -255,41 +521,15 @@ class _UsageSummaryCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 7),
-          Text(
-            totalMinutes == 0
-                ? 'No usage data saved yet.'
-                : 'Loaded from backend.',
-            style: const TextStyle(fontSize: 12, color: AppColors.mutedText),
+          const Text(
+            '기기 사용정보를 기준으로 앱별 사용시간을 집계합니다.',
+            style: TextStyle(fontSize: 12, color: AppColors.mutedText),
           ),
           const SizedBox(height: 18),
-          MiniBarChart(values: _chartValues(totalMinutes)),
+          MiniBarChart(values: chartValues),
         ],
       ),
     );
-  }
-
-  List<double> _chartValues(int total) {
-    final last = total == 0 ? 3.0 : (total / 12).clamp(3, 22).toDouble();
-    return [
-      1,
-      2,
-      3,
-      9,
-      14,
-      19,
-      10,
-      7,
-      5,
-      8,
-      4,
-      9,
-      7,
-      6,
-      last,
-      last + 2,
-      last - 1,
-      3,
-    ];
   }
 }
 
@@ -300,16 +540,16 @@ class _UsageListCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final rows = logs.isEmpty
-        ? const [
-            {'app_name': 'Instagram', 'duration_minutes': 88},
-            {'app_name': 'YouTube', 'duration_minutes': 62},
-            {'app_name': 'KakaoTalk', 'duration_minutes': 42},
-            {'app_name': 'Naver', 'duration_minutes': 28},
-            {'app_name': 'TikTok', 'duration_minutes': 26},
-          ]
-        : logs;
-    final maxMinutes = rows
+    if (logs.isEmpty) {
+      return const DesignCard(
+        child: Text(
+          '표시할 앱 사용시간 데이터가 아직 없어요.',
+          style: TextStyle(color: AppColors.mutedText),
+        ),
+      );
+    }
+
+    final maxMinutes = logs
         .map((row) => asInt(row['duration_minutes']))
         .fold<int>(1, (a, b) => a > b ? a : b);
 
@@ -321,7 +561,7 @@ class _UsageListCard extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  'App usage',
+                  '앱별 사용 시간',
                   style: TextStyle(
                     color: AppColors.navy,
                     fontWeight: FontWeight.w900,
@@ -330,7 +570,7 @@ class _UsageListCard extends StatelessWidget {
                 ),
               ),
               Text(
-                'Backend data',
+                '기기 데이터',
                 style: TextStyle(
                   color: AppColors.blue,
                   fontSize: 11,
@@ -340,8 +580,8 @@ class _UsageListCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          ...rows.take(5).map((row) {
-            final name = row['app_name']?.toString() ?? 'App';
+          ...logs.take(12).map((row) {
+            final name = row['app_name']?.toString() ?? '알 수 없는 앱';
             final minutes = asInt(row['duration_minutes']);
             return UsageRow(
               initials: _initials(name),
@@ -351,12 +591,6 @@ class _UsageListCard extends StatelessWidget {
               progress: (minutes / maxMinutes).clamp(0.05, 1.0),
             );
           }),
-          const Center(
-            child: Text(
-              'Example data is shown when server logs are empty.',
-              style: TextStyle(fontSize: 10, color: Color(0xffc3b5a5)),
-            ),
-          ),
         ],
       ),
     );
@@ -364,6 +598,7 @@ class _UsageListCard extends StatelessWidget {
 
   String _initials(String name) {
     final letters = name.replaceAll(' ', '');
+    if (letters.isEmpty) return '--';
     if (letters.length <= 2) return letters.toUpperCase();
     return letters.substring(0, 2).toUpperCase();
   }
@@ -374,31 +609,63 @@ class _UsageListCard extends StatelessWidget {
     if (lower.contains('instagram')) return const Color(0xffdf2760);
     if (lower.contains('kakao')) return AppColors.brown;
     if (lower.contains('tiktok')) return Colors.black;
-    return AppColors.green;
+    if (lower.contains('naver')) return AppColors.green;
+    return AppColors.blue;
   }
 }
 
-class _WeeklyCard extends StatelessWidget {
-  const _WeeklyCard({required this.values});
+class _DailyUsageCard extends StatelessWidget {
+  const _DailyUsageCard({required this.period, required this.points});
 
-  final List<double> values;
+  final _UsagePeriod period;
+  final List<_DailyPoint> points;
 
   @override
   Widget build(BuildContext context) {
+    final visiblePoints = period == _UsagePeriod.month
+        ? [
+            for (var i = 0; i < points.length; i++)
+              if (i % 5 == 0 || i == points.length - 1) points[i],
+          ]
+        : points;
+
     return DesignCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Last 7 days',
-            style: TextStyle(
+          Text(
+            period == _UsagePeriod.today ? '오늘 사용시간' : '날짜별 총 사용시간',
+            style: const TextStyle(
               color: AppColors.navy,
               fontWeight: FontWeight.w900,
               fontSize: 15,
             ),
           ),
           const SizedBox(height: 18),
-          MiniBarChart(values: values, compact: true),
+          MiniBarChart(
+            values: points
+                .map(
+                  (point) =>
+                      point.minutes <= 0 ? 1.0 : point.minutes.toDouble(),
+                )
+                .toList(),
+            compact: true,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: visiblePoints
+                .map(
+                  (point) => Text(
+                    point.label,
+                    style: const TextStyle(
+                      color: AppColors.mutedText,
+                      fontSize: 10,
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
         ],
       ),
     );

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:emotion_app/core/theme/app_colors.dart';
+import 'package:emotion_app/data/notifications/notification_service.dart';
 import 'package:emotion_app/data/session/app_session.dart';
 import 'package:emotion_app/features/auth/login_page.dart';
 import 'package:emotion_app/features/shell/app_shell.dart';
@@ -8,6 +9,7 @@ import 'package:emotion_app/features/shell/app_shell.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppSession.instance.load();
+  await NotificationService.instance.start();
   runApp(const MindBalanceApp());
 }
 
