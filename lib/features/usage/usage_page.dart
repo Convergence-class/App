@@ -39,7 +39,7 @@ class _UsagePageState extends State<UsagePage> {
   List<Map<String, dynamic>> logs = [];
   List<DeviceUsageApp> deviceLogs = [];
   List<_DailyPoint> dailyPoints = [];
-  int _loadVersion = 0;
+  int _usageLoadVersion = 0;
 
   @override
   void initState() {
@@ -48,7 +48,7 @@ class _UsagePageState extends State<UsagePage> {
   }
 
   Future<void> _load() async {
-    final loadVersion = ++_loadVersion;
+    final usageLoadVersion = ++_usageLoadVersion;
     final requestedPeriod = period;
     setState(() {
       loading = true;
@@ -83,7 +83,7 @@ class _UsagePageState extends State<UsagePage> {
         serverLogs = asMapList(data?['usage_logs']);
       }
 
-      if (loadVersion != _loadVersion || requestedPeriod != period) return;
+      if (usageLoadVersion != _usageLoadVersion || requestedPeriod != period) return;
       if (!mounted) return;
       setState(() {
         logs = deviceLogs.isNotEmpty
@@ -116,11 +116,11 @@ class _UsagePageState extends State<UsagePage> {
       });
       _showHighUsageAlertIfNeeded();
     } catch (e) {
-      if (loadVersion != _loadVersion || requestedPeriod != period) return;
+      if (usageLoadVersion != _usageLoadVersion || requestedPeriod != period) return;
       if (!mounted) return;
       setState(() => error = e.toString());
     } finally {
-      if (mounted && loadVersion == _loadVersion && requestedPeriod == period) {
+      if (mounted && usageLoadVersion == _usageLoadVersion && requestedPeriod == period) {
         setState(() => loading = false);
       }
     }
